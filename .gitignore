@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.env
+
+# macOS / Linux cruft
+.DS_Store
+
+# Output estrazioni / stato
+estratti_zip/
+*/estratti_zip/
+.zip_iter_state.json
+**/.zip_iter_state.json
