@@ -161,18 +161,26 @@ class ZipNavigator(Iterator[List[str]]):
                 raise FileNotFoundError(rel)
 
         if not recursive:
-            return sorted(posixpath.join(rel, c.name) if rel else c.name for c in base.iterdir())
+            out: list[str] = []
+            for c in base.iterdir():
+                name = c.name + ("/" if c.is_dir() else "")
+                out.append(posixpath.join(rel, name) if rel else name)
+            return sorted(out)
 
         out: list[str] = []
         stack = [(rel, base)]
         while stack:
             cur_rel, cur = stack.pop()
             for child in cur.iterdir():
+                # path relativo rispetto alla root zip
                 child_rel = posixpath.join(cur_rel, child.name) if cur_rel else child.name
-                out.append(child_rel)
                 if child.is_dir():
+                    out.append(child_rel + "/")
                     stack.append((child_rel, child))
+                else:
+                    out.append(child_rel)
         return sorted(out)
+
 
 
     def cd(self, path: str) -> str:
