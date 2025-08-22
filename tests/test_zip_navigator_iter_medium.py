@@ -54,25 +54,21 @@ def make_medium_zip(tmp_path: Path, depth: int = 3) -> tuple[Path, set[str]]:
 
     return zpath, members
 
+def _corrupt_first_occurrence(zip_path: Path, marker: bytes) -> None:
+    ba = bytearray(zip_path.read_bytes())
+    idx = ba.find(marker)
+    assert idx != -1, "marker non trovato dentro lo zip; accertati che compress_type=ZIP_STORED"
+    ba[idx] ^= 0xFF  # flipping 1 byte
+    zip_path.write_bytes(bytes(ba))
+
 
 def make_zip_with_corrupted_member(tmp_path: Path) -> Path:
-    """
-    Crea uno zip con:
-      - ok.txt (valido)
-      - corrupt/bad.txt (ZIP_STORED con CRC sbagliata)
-    La lettura/estrazione di 'corrupt/bad.txt' deve sollevare errore di CRC.
-    """
     zpath = tmp_path / "corrupt.zip"
     with zipfile.ZipFile(zpath, "w") as z:
-        z.writestr("ok.txt", b"all good\n")
-
-        data = b"this will fail crc\n"
-        zi = zipfile.ZipInfo("corrupt/bad.txt")
-        zi.compress_type = zipfile.ZIP_STORED
-        zi.file_size = len(data)
-        zi.CRC = 0  # CRC volutamente sbagliata
-        z.writestr(zi, data)
-
+        z.writestr("ok.txt", b"all good\n", compress_type=zipfile.ZIP_STORED)
+        z.writestr("corrupt/bad.txt", b"this will fail crc\n", compress_type=zipfile.ZIP_STORED)
+    # Corrompi i dati del secondo file (ZIP_STORED -> testo in chiaro nell'archivio)
+    _corrupt_first_occurrence(zpath, b"this will fail crc\n")
     return zpath
 
 
@@ -190,8 +186,14 @@ def test_resume_after_interrupt_medium(tmp_path):
             max_retries=0,
             validate_crc=True,
         )
+
         first_batch = next(zn)
         assert len(first_batch) > 0
+        # mappa i path del primo batch alla path interna allo zip
+        first_seen = set()
+        for p in first_batch:
+            rel = os.path.relpath(p, str(out_dir / "estratti_zip")).replace(os.sep, "/")
+            first_seen.add(posixpath.normpath(rel))
 
     # Seconda "sessione": resume e completa
     seen_rel = set()
@@ -205,8 +207,8 @@ def test_resume_after_interrupt_medium(tmp_path):
         st = zn2.stato_iteratore()
         assert st["rimanenti"] == 0
 
-    # Verifica copertura completa (notare che l'ultima cartella contiene solo l'ultimo batch)
-    # per questo usiamo l'unione di tutti i batch raccolti.
+    # Unione: primo batch + batch post-resume
+    seen_rel |= first_seen
     assert seen_rel == expected
 
 
@@ -271,12 +273,8 @@ def test_corrupted_member_on_error_abort(tmp_path):
     """
     zpath = tmp_path / "only_corrupt.zip"
     with zipfile.ZipFile(zpath, "w") as z:
-        data = b"boom\n"
-        zi = zipfile.ZipInfo("bad.txt")
-        zi.compress_type = zipfile.ZIP_STORED
-        zi.file_size = len(data)
-        zi.CRC = 0  # CRC volutamente errata
-        z.writestr(zi, data)
+        z.writestr("bad.txt", b"boom\n", compress_type=zipfile.ZIP_STORED)
+    _corrupt_first_occurrence(zpath, b"boom\n")
 
     out_dir = tmp_path / "out_abort"; out_dir.mkdir()
     with ZipNavigator(str(zpath)) as zn:
