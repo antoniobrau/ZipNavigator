@@ -107,7 +107,15 @@ class ZipNavigator(Iterator[List[str]]):
         return "/" + self._cwd if self._cwd else "/"
 
 
-
+    def _dir_exists_in_zip(self, rel: str) -> bool:
+        """Ritorna True se esiste almeno un membro sotto 'rel/' nello ZIP."""
+        if rel == "" or rel == "/":
+            return True
+        prefix = rel.rstrip("/") + "/"
+        for name in self._zip.namelist():
+            if name.startswith(prefix):
+                return True
+        return False
 
     def _resolve(self, path: Optional[str]) -> str:
         # Normalizza backslash Windows
@@ -187,23 +195,29 @@ class ZipNavigator(Iterator[List[str]]):
         rel = self._resolve(path)
         p = self._zpath(rel)
 
-        # root sempre ok
-        if rel == "" or p.is_dir():
-            self._cwd = rel if rel == "" or rel.endswith("/") else rel  # tieni così
+        # root
+        if rel == "":
+            self._cwd = ""
             return self.pwd()
 
-        # se esiste ma non è directory → errore chiaro
+        # se esiste una directory con quel prefisso (anche implicita) → entra
+        if self._dir_exists_in_zip(rel):
+            self._cwd = rel.rstrip("/") + "/"
+            return self.pwd()
+
+        # se esiste (ed è file) → errore “non directory”
         if p.exists():
             raise NotADirectoryError(rel)
 
-        # prova con trailing slash (dir esplicita)
+        # prova variante con slash (se mancava) — già coperto da _dir_exists_in_zip in pratica
         if rel and not rel.endswith("/"):
-            p2 = self._zpath(rel + "/")
-            if p2.is_dir():
-                self._cwd = rel + "/"
+            if self._dir_exists_in_zip(rel + "/"):
+                self._cwd = rel.rstrip("/") + "/"
                 return self.pwd()
 
+        # non trovato
         raise FileNotFoundError(rel)
+
 
 
     def cat(self, path: str, encoding="utf-8", errors="strict"):
