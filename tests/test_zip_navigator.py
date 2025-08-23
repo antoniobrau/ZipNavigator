@@ -6,13 +6,8 @@ import posixpath
 from pathlib import Path
 import pytest
 
-# Ensure 'src' is on sys.path when tests run locally
-ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
 
-from zipnavigator import ZipNavigator
+from src.zipnavigator import ZipNavigator
 
 
 def make_small_zip(tmp_path: Path) -> Path:

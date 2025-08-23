@@ -7,13 +7,7 @@ from pathlib import Path
 
 import pytest
 
-# Ensure 'src' is on sys.path when tests run locally
-ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
-
-from zipnavigator import ZipNavigator
+from src.zipnavigator import ZipNavigator
 
 
 def _make_csv_zip(tmp_path: Path) -> Path:
@@ -28,7 +22,7 @@ def _make_csv_zip(tmp_path: Path) -> Path:
 
 
 @pytest.mark.parametrize("base_path", ["payload/", "payload"])  # trailing and non-trailing slash
-def test_initialize_iterator_with_trailing_or_not_base(tmp_path, base_path):
+def test_initialize_iterator_with_trailing_or_not_base(make_sample_zip, tmp_path, base_path):
     """
     Ensure initialize_iterator() finds files when the working base is a directory
     specified either with or without a trailing slash.
@@ -49,6 +43,7 @@ def test_initialize_iterator_with_trailing_or_not_base(tmp_path, base_path):
         assert nav.pwd().endswith("/payload/")
 
         # Initialize iterator to extract only CSV files within the base
+        print(out_dir)
         nav.initialize_iterator(
             output_dir=str(out_dir),
             batch_size=10,
@@ -73,3 +68,4 @@ def test_initialize_iterator_with_trailing_or_not_base(tmp_path, base_path):
         st = nav.iterator_status()
         assert st["remaining"] == 0
         assert st["total_files"] == 2
+

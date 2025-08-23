@@ -1,169 +1,168 @@
-# ZipNavigator
+ZipNavigator
+Overview
 
-## Overview
+ZipNavigator is a Python utility to safely navigate and extract content from .zip archives. It provides filesystem-like operations (ls, cd, pwd, cat, exists, is_dir, is_file, info) and a resumable, batched extraction iterator with optional CRC validation, retry policy, disk-space preflight, and persistent state on disk (.zip_iter_state.json).
 
-ZipNavigator is a Python utility to safely navigate and extract content from `.zip` archives. It offers filesystem-like operations (e.g., `ls`, `cd`, `pwd`, `cat`) and a robust, resumable batch-extraction iterator with CRC validation, retry policy, disk-space preflight, and persistent state saved to disk (`.zip_iter_state.json`).
+Typical use: processing large ZIP datasets (e.g., images/videos/data dumps) where you extract only certain types, survive interruptions, log failures, and resume exactly where you left off.
 
-**Real-world use case:** processing large datasets shipped as ZIP files (e.g., image/video corpora or nightly data drops) where you need to extract only certain file types, survive interruptions, record failures, and resume exactly where the previous run stopped.
+Features
 
-## Features
+Filesystem-style navigation inside archives: ls(), cd(), pwd(), cat(), exists(), is_dir(), is_file(), info().
 
-* Filesystem-style navigation inside archives: `ls()`, `cd()`, `pwd()`, `cat()`, `exists()`, `is_dir()`, `is_file()`, `info()`.
-* Resumable batch extraction via persistent state with `initialize_iterator()`, iteration (Python iterator protocol), `iterator_status()`, `reset_iterator()`, `resume_iterator()`.
-* Error policy: `on_error="skip" | "abort"`, with `max_retries` per file.
-* Optional integrity checks with `validate_crc=True`.
-* Disk-space preflight for each batch.
-* Safe path handling to prevent Zip Slip (rejects absolute paths, drive letters, and `..` traversal).
-* Python 3.10+ and standard library only (no external dependencies).
+Resumable batch extraction via initialize_iterator(), Python iterator protocol, iterator_status(), reset_iterator(), resume_iterator().
 
-## Installation
+Error policy: on_error="skip" | "abort", with per-file max_retries.
 
-```bash
-# Clone and enter the repository
+Optional integrity checks with validate_crc=True.
+
+Disk-space preflight for each batch.
+
+Safe path handling to prevent Zip Slip (rejects absolute paths, drive letters, and .. traversal).
+
+Python 3.10+, standard library only.
+
+Installation
+
+From source (recommended during development):
+
 git clone https://github.com/antoniobrau/zipnavigator.git
 cd zipnavigator
 
-# (Recommended) Create a virtual environment
 python -m venv .venv
 # Windows
 .venv\Scripts\activate
 # macOS/Linux
 source .venv/bin/activate
 
-# Install the package
-pip install .
+pip install -e .
 
-# Alternatively, for editable development installs:
-# pip install -e .
-```
 
-## Usage
+If you publish to PyPI, users can install with: pip install zipnavigator.
 
-### Basic navigation
-
-```python
+Quick Start
 from zipnavigator import ZipNavigator
 
-nav = ZipNavigator("data/archive.zip")
+# Always use context managers to avoid open handles (especially on Windows)
+with ZipNavigator("bundle.zip") as nav:
+    print("Root:", nav.ls())       # ['docs/', 'payload/', 'top.txt']
 
-print(nav.pwd())             # "/"
-print(nav.ls())              # top-level entries
-nav.cd("docs/")              # change directory inside the zip
-print(nav.ls())              # list inside docs/
-print(nav.exists("README.txt"))
-print(nav.is_file("README.txt"))
-print(nav.info("README.txt"))  # metadata (size, compression, CRC, etc.)
+    nav.cd("payload/")             # directories use a trailing '/'
+    print("Here:", nav.ls())       # e.g. ['payload/data1.csv', 'payload/data2.csv']
 
-text = nav.cat("README.txt")   # read text file (UTF-8 by default)
-print(text[:200])
-```
+    # Read a text file (UTF-8 by default)
+    print(nav.cat("data1.csv"))
 
-### Resumable batch extraction (iterator)
+    # Batched extraction of only CSV files
+    nav.initialize_iterator(output_dir="out", batch_size=5, extensions=[".csv"])
+    for batch in nav:
+        print("Extracted batch:", batch)
 
-```python
-from zipnavigator import ZipNavigator
-from pathlib import Path
+Path Semantics (important)
 
-nav = ZipNavigator("data/dataset.zip")
+ZIP archives use POSIX-style paths / internally.
 
-# Optionally narrow the working base before initializing the iterator
-nav.cd("images/")
+Directories are represented with a trailing / (e.g., payload/).
+ls() and pwd() always show directories with /.
 
-nav.initialize_iterator(
-    output_dir="work",                 # parent folder for extraction
-    batch_size=50,                     # batch size
-    extract_subdir="extracted_zip",    # extraction subfolder
-    reset=True,                        # start fresh (clears previous state for this run)
-    seed=42,                           # shuffle order deterministically
-    extensions=[".jpg", ".png"],       # filter by extension (optional)
-    on_error="skip",                   # or "abort"
-    max_retries=2,
-    validate_crc=True                  # integrity check (slower, safer)
-)
+cd() is tolerant: you may pass payload or payload/; internally the working directory becomes payload/.
 
-# Each iteration extracts one batch and returns absolute paths of extracted files
-for extracted_paths in nav:
-    print("Extracted:", extracted_paths)
+File operations like cat() and info() must target files (no trailing /).
 
-    # You can inspect progress at any time
-    state = nav.iterator_status()
-    print("Done:", state["extracted_so_far"], "Remaining:", state["remaining"])
-```
-
-### Resuming a previous run
-
-```python
+Usage
+Basic Navigation
 from zipnavigator import ZipNavigator
 
-# Re-open the same archive and resume from saved state
-nav = ZipNavigator("data/dataset.zip")
-nav.resume_iterator(
-    output_dir="work",
-    extract_subdir="extracted_zip"
-)
+with ZipNavigator("data/archive.zip") as nav:
+    print(nav.pwd())            # "/"
+    print(nav.ls())             # top-level entries
 
-for extracted_paths in nav:
-    print("Resumed batch:", extracted_paths)
-```
+    nav.cd("docs/")             # move into a directory
+    print(nav.ls())             # list inside docs/
 
-### Resetting iterator state
+    print(nav.exists("README.txt"))   # True/False
+    print(nav.is_file("README.txt"))  # True/False
 
-```python
-# Clear iterator state and temporary extraction files for a new configuration/run
-nav.reset_iterator()
-```
+    meta = nav.info("README.txt")     # size, compress_size, CRC, compress_type, date_time
+    print(meta)
 
-## Examples
+    text = nav.cat("README.txt")
+    print(text[:200])
 
-### Example: selective extraction to a custom folder structure
-
-```python
-from zipnavigator import ZipNavigator
-from pathlib import Path
-
-nav = ZipNavigator("data/bundle.zip")
-nav.cd("payload/")
-
-nav.initialize_iterator(
-    output_dir="out",
-    batch_size=100,
-    extract_subdir="batch",
-    reset=True,
-    extensions=[".csv"],
-    on_error="skip",
-    max_retries=1,
-    validate_crc=False
-)
-
-for batch_paths in nav:
-    # batch_paths are absolute filesystem paths under out/batch/
-    for p in batch_paths:
-        # You can move or post-process files here
-        # e.g., send to a data warehouse, parse CSV, etc.
-        print("Ready:", p)
-
-    st = nav.iterator_status()
-    print(f"Progress: {st['extracted_so_far']}/{st['total_files']}  Failed so far: {st['failed_so_far']}")
-```
-
-### Example: listing and inspecting entries before extraction
-
-```python
+Resumable Batch Extraction (Iterator)
 from zipnavigator import ZipNavigator
 
-nav = ZipNavigator("data/archive.zip")
-print(nav.ls(recursive=True)[:10])      # preview first 10 entries
-meta = nav.info("docs/manual.pdf")      # get compressed/uncompressed sizes, CRC, compression type
-print(meta)
-```
+with ZipNavigator("data/dataset.zip") as nav:
+    nav.cd("images/")  # optional: narrow base before initializing
 
-## Contributing
+    nav.initialize_iterator(
+        output_dir="work",               # parent folder for extraction
+        batch_size=50,                   # number of files per batch
+        extract_subdir="extracted_zip",  # subfolder inside output_dir
+        reset=True,                      # start fresh (clears previous state for this run)
+        seed=42,                         # deterministic shuffle
+        extensions=[".jpg", ".png"],     # optional filter
+        on_error="skip",                 # or "abort"
+        max_retries=2,
+        validate_crc=True                # slower, but verifies integrity
+    )
 
-1. Fork the repository and create a feature branch.
-2. Keep changes focused and add tests when applicable.
-3. Ensure code is formatted and linted.
-4. Open a pull request with a clear description, rationale, and, if relevant, benchmarks or before/after diagnostics.
+    for extracted_paths in nav:
+        print("Extracted:", extracted_paths)
+        st = nav.iterator_status()
+        print("Done:", st["extracted_so_far"], "Remaining:", st["remaining"])
 
-## License
+Resuming a Previous Run
+from zipnavigator import ZipNavigator
 
-MIT. See the `LICENSE` file in the repository root.
+with ZipNavigator("data/dataset.zip") as nav:
+    nav.resume_iterator(output_dir="work", extract_subdir="extracted_zip")
+    for batch in nav:
+        print("Resumed batch:", batch)
+
+Resetting Iterator State
+with ZipNavigator("data/dataset.zip") as nav:
+    nav.reset_iterator()  # clears state file and temporary extraction files
+
+Examples
+
+See the examples/ folder:
+
+example_quickstart.py — minimal navigation + extraction.
+
+example_iterator.py — filtered batched extraction.
+
+example_resume.py — resume a previous run.
+
+Error Handling
+
+on_error="skip": log failing members and continue; iterator_status() exposes failed_so_far and a failed_tail.
+
+on_error="abort": raise at the first failing member.
+
+max_retries: per-file retry attempts (≥0).
+
+validate_crc=True: extract via a safe streaming path and rely on CRC/decompress checks to fail on corruption (slower).
+
+Windows Notes
+
+Use with ZipNavigator(...) to ensure file handles are closed before deleting or moving the ZIP or its temp folders.
+
+Avoid opening the extraction directory in Explorer with Preview Pane while running, as it can hold file locks.
+
+Security
+
+Paths are validated to prevent Zip Slip: absolute paths, drive letters, and parent traversal (..) are rejected.
+
+Contributing
+
+Fork and create a feature branch.
+
+Keep changes focused and add tests where relevant.
+
+Ensure tests pass and code is formatted.
+
+Open a PR with a clear description and rationale.
+
+License
+
+MIT. See LICENSE.

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "zipnavigator"
 version = "0.1.0"
-description = "Navigazione ed estrazione sicura di archivi ZIP con supporto per iterazioni batch e resume."
+description = "Safe navigation and batch extraction of ZIP archives with resume support."
 authors = [
     { name = "Antonio Brau", email = "antonio@example.com" }
 ]
@@ -30,3 +30,9 @@ dependencies = []
 Homepage = "https://github.com/antoniobrau/zipnavigator"
 Repository = "https://github.com/antoniobrau/zipnavigator"
 Issues = "https://github.com/antoniobrau/zipnavigator/issues"
+
+[tool.pytest.ini_options]
+testpaths = [
+  "tests",
+]
+pythonpath = ["."]

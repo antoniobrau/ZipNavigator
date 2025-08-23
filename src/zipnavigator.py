@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-ZipNavigator (with error handling)
-==================================
+ZipNavigator (minimal, ZIP-aligned paths with tolerant cd)
+=========================================================
 
 - Navigation: ls(), cd(), pwd(), cat(), exists(), is_dir(), is_file(), info()
 - Iterator with persistent state:
   initialize_iterator(...), next()/for, iterator_status(),
   reset_iterator(), resume_iterator()
 
-Robustness features:
+Robustness:
 - on_error: "skip" (default) | "abort"
 - max_retries: per-file retry attempts (default 1)
 - validate_crc: optional; if True, manual extraction with integrity verification
@@ -18,7 +18,6 @@ Robustness features:
 
 from __future__ import annotations
 import os, json, shutil, random, posixpath
-from pathlib import PurePosixPath
 from typing import Iterable, Iterator, List, Optional, Dict, Any, Set, Tuple
 import zipfile
 import zlib
@@ -56,7 +55,7 @@ def _free_space_bytes(path: str) -> int:
 # ----------------- class -----------------
 
 class ZipNavigator(Iterator[List[str]]):
-    """Safe ZIP navigator with filesystem-like ops and resumable batch extraction."""
+    """ZIP navigator with filesystem-like ops and resumable batch extraction."""
 
     # ----- simple queries -----
 
@@ -101,20 +100,23 @@ class ZipNavigator(Iterator[List[str]]):
     # ---------------- Navigation ----------------
 
     def _zpath(self, rel: str) -> zipfile.Path:
-        """Resolve a zipfile.Path, tolerating implicit directories."""
+        """
+        Map a ZIP-internal path to zipfile.Path.
+        Be tolerant with implicit directories: try "<name>/" if "<name>" doesn't exist.
+        """
         p = zipfile.Path(self._zip, at=rel)
         if rel and not rel.endswith("/") and (not p.is_dir() and not p.exists()):
             p2 = zipfile.Path(self._zip, at=rel + "/")
             if p2.is_dir() or p2.exists():
                 return p2
-        return p    
+        return p
 
     def pwd(self) -> str:
         """Return the current working directory inside the zip."""
         return "/" + self._cwd if self._cwd else "/"
 
     def _dir_exists_in_zip(self, rel: str) -> bool:
-        """Return True if there is at least one member under 'rel/' in the ZIP."""
+        """True if there is at least one member under 'rel/' in the ZIP."""
         if rel == "" or rel == "/":
             return True
         prefix = rel.rstrip("/") + "/"
@@ -124,36 +126,35 @@ class ZipNavigator(Iterator[List[str]]):
         return False
 
     def _resolve(self, path: Optional[str]) -> str:
-        """Normalize a user path relative to the current working directory."""
-        # Normalize Windows backslashes
-        if path is not None:
-            path = path.replace("\\", "/")
+        """
+        Resolve user path relative to _cwd with minimal ZIP semantics:
+        - path=None returns _cwd unchanged.
+        - We don't auto-append '/' (that decision is left to cd()).
+        - Normalize '.', '..', duplicate slashes; prevent escaping root.
+        """
+        if path  == "" or path == "/":
+            return ""
+        if path is None:
+            return self._cwd
 
-        # Remember if the user explicitly asked for a directory with trailing '/'
-        had_trailing = bool(path) and path.endswith("/")
+        path = path.replace("\\", "/")
+        is_dir_hint = path.endswith("/")
 
-        if not path:
-            p = PurePosixPath(self._cwd)
+        # Absolute → strip leading '/', else join to cwd
+        if path.startswith("/"):
+            rel = path[1:]
         else:
-            p = PurePosixPath(path)
-            if p.is_absolute():
-                p = p.relative_to("/")
-            else:
-                p = PurePosixPath(self._cwd) / p
+            rel = posixpath.join(self._cwd, path) if self._cwd else path
 
-        # Remove ".", "..", duplicate slashes, and trailing slash
-        s = posixpath.normpath(str(p))
-
-        # Represent logical root as empty string
+        # Normalize '.', '..', duplicated slashes
+        s = posixpath.normpath(rel)
         if s == ".":
             s = ""
-
-        # Do not allow paths to escape the root
         if s.startswith(".."):
             raise ValueError("Invalid path")
 
-        # If user had a trailing slash, restore it (except for root)
-        if had_trailing and s != "" and not s.endswith("/"):
+        # Preserve explicit user intent for dirs
+        if is_dir_hint and s and not s.endswith("/"):
             s += "/"
 
         return s
@@ -164,18 +165,9 @@ class ZipNavigator(Iterator[List[str]]):
         base = self._zpath(rel)
 
         if not base.is_dir():
-            if rel and not rel.endswith("/"):
-                base2 = self._zpath(rel + "/")
-                if base2.is_dir():
-                    base, rel = base2, rel + "/"
-                else:
-                    if base.exists():
-                        raise NotADirectoryError(rel)
-                    raise FileNotFoundError(rel)
-            else:
-                if base.exists():
-                    raise NotADirectoryError(rel)
-                raise FileNotFoundError(rel)
+            if base.exists():
+                raise NotADirectoryError(rel)
+            raise FileNotFoundError(rel)
 
         if not recursive:
             out: list[str] = []
@@ -189,7 +181,6 @@ class ZipNavigator(Iterator[List[str]]):
         while stack:
             cur_rel, cur = stack.pop()
             for child in cur.iterdir():
-                # path relative to the zip root
                 child_rel = posixpath.join(cur_rel, child.name) if cur_rel else child.name
                 if child.is_dir():
                     out.append(child_rel + "/")
@@ -199,31 +190,31 @@ class ZipNavigator(Iterator[List[str]]):
         return sorted(out)
 
     def cd(self, path: str) -> str:
-        """Change current directory inside the zip. Returns the new pwd()."""
+        """
+        Change current directory inside the zip. Accepts both 'name/' and 'name':
+        - If 'name' (no '/') denotes a directory (explicit or implicit), we enter 'name/'.
+        - If it denotes a file, raise NotADirectoryError.
+        - If nothing matches, raise FileNotFoundError.
+        """
         rel = self._resolve(path)
-        p = self._zpath(rel)
 
         # root
         if rel == "":
             self._cwd = ""
             return self.pwd()
 
-        # if there is a directory with that prefix (even implicit) → enter
-        if self._dir_exists_in_zip(rel):
-            self._cwd = rel.rstrip("/") + "/"
+        # Prefer directory semantics: try '<rel>/' as a directory prefix
+        dir_rel = rel.rstrip("/") + "/"
+        if self._dir_exists_in_zip(dir_rel):
+            self._cwd = dir_rel
             return self.pwd()
 
-        # if it exists (and is a file) → not a directory
+        # If it's an existing file → not a directory
+        p = self._zpath(rel)
         if p.exists():
             raise NotADirectoryError(rel)
 
-        # try with a trailing slash — usually covered by _dir_exists_in_zip
-        if rel and not rel.endswith("/"):
-            if self._dir_exists_in_zip(rel + "/"):
-                self._cwd = rel.rstrip("/") + "/"
-                return self.pwd()
-
-        # not found
+        # Not found
         raise FileNotFoundError(rel)
 
     def cat(self, path: str, encoding="utf-8", errors="strict"):
@@ -231,9 +222,11 @@ class ZipNavigator(Iterator[List[str]]):
         rel = self._resolve(path)
         zp = self._zpath(rel)
 
+        if not zp.exists():
+            raise FileNotFoundError(rel)
         if zp.is_dir():
             raise IsADirectoryError(rel)
-        if not zp.exists() or not zp.is_file():
+        if not zp.is_file():
             raise FileNotFoundError(rel)
 
         with zp.open("rb") as f:
@@ -245,7 +238,6 @@ class ZipNavigator(Iterator[List[str]]):
         rel = self._resolve(path)
         zp = self._zpath(rel)
 
-        # directories (root or implicit): getinfo would fail
         if zp.is_dir():
             raise IsADirectoryError(rel)
 
@@ -287,12 +279,6 @@ class ZipNavigator(Iterator[List[str]]):
     ) -> None:
         """
         Prepare batched extraction with persistent state.
-
-        on_error:
-            - "skip": failing files are skipped and logged in 'failed'.
-            - "abort": stop at the first error by raising an exception.
-        max_retries: per-file attempts (>=0).
-        validate_crc: if True, manual extraction with integrity check (slower).
         """
         if batch_size <= 0:
             raise ValueError("batch_size must be > 0")
@@ -317,7 +303,7 @@ class ZipNavigator(Iterator[List[str]]):
             state = self._load_state(state_path)
             if state.get("zip_path") != os.path.abspath(self.zip_path):
                 raise RuntimeError("State belongs to a different ZIP")
-            if state.get("base_at_init") != self._resolve(self._cwd):
+            if state.get("base_at_init") != self._resolve(None):
                 raise RuntimeError("Different base position inside the ZIP")
             saved_ext = set(state.get("extensions", [])) or None
             if saved_ext != self._extensions:
@@ -333,7 +319,10 @@ class ZipNavigator(Iterator[List[str]]):
             self._max_retries = int(state.get("max_retries", self._max_retries))
             self._validate_crc = bool(state.get("validate_crc", self._validate_crc))
         else:
-            base_rel = self._resolve(self._cwd)
+            base_rel = self._resolve(None)  # keep cwd as-is
+            # Require base to be a directory (root "" or endswith "/")
+            if base_rel and not base_rel.endswith("/"):
+                raise RuntimeError("Base must be a directory path ending with '/'.")
             file_list = self._scan_all_files_under(base_rel)
             file_list = [f for f in file_list if _is_safe_member(f)]
             if self._extensions:
@@ -369,19 +358,15 @@ class ZipNavigator(Iterator[List[str]]):
         self._iter_active = True
         self._extract_dir = extract_dir
         self._state_path = state_path
-        self._base_at_init = self._resolve(self._cwd)
+        self._base_at_init = self._resolve(None)
 
     def _scan_all_files_under(self, base_rel: str) -> List[str]:
+        # base must be a directory ("", or endswith "/")
+        if base_rel and not base_rel.endswith("/"):
+            return []
         base = self._zpath(base_rel)
         if not base.is_dir():
-            if base_rel and not base_rel.endswith("/"):
-                base2 = self._zpath(base_rel + "/")
-                if base2.is_dir():
-                    base = base2
-                else:
-                    return []
-            else:
-                return []
+            return []
         out: List[str] = []
         stack = [(base_rel, base)]
         while stack:
@@ -477,7 +462,6 @@ class ZipNavigator(Iterator[List[str]]):
                     raise RuntimeError(f"Unsafe ZIP member: {m}")
                 continue
 
-            # retry loop
             last_err: Optional[Exception] = None
             for _attempt in range(self._max_retries + 1):
                 try:
@@ -513,19 +497,13 @@ class ZipNavigator(Iterator[List[str]]):
         start, end = self._cursor, min(self._cursor + self._batch_size, len(self._order))
         batch = self._order[start:end]
 
-        # cleanup extraction folder for the new batch
         self._clear_extract_dir()
-
-        # disk space preflight
         self._preflight_space(batch)
-
-        # extract
         ok_paths, failed_now = self._extract_members(batch)
-        # update in-memory state
+
         self._cursor = end
         self._failed.extend(f for f in failed_now if f not in self._failed)
 
-        # persist state
         self._save_state(
             self._state_path,
             {
@@ -546,7 +524,6 @@ class ZipNavigator(Iterator[List[str]]):
         return ok_paths
 
     def iterator_status(self) -> Dict[str, Any]:
-        """Return a dictionary with the current iterator status."""
         if not self._iter_active or self._order is None:
             return {"active": False}
         total = len(self._order)
@@ -563,7 +540,7 @@ class ZipNavigator(Iterator[List[str]]):
             "extracted_so_far": done,
             "remaining": remaining,
             "failed_so_far": len(self._failed),
-            "failed_tail": list(self._failed[-10:]),  # last 10 for quick debug
+            "failed_tail": list(self._failed[-10:]),
             "extract_dir": os.path.abspath(self._extract_dir) if self._extract_dir else None,
             "state_file": os.path.abspath(self._state_path) if self._state_path else None,
             "error_policy": self._on_error,
@@ -572,7 +549,6 @@ class ZipNavigator(Iterator[List[str]]):
         }
 
     def reset_iterator(self) -> None:
-        """Clear iterator state and temporary files."""
         if self._extract_dir and os.path.isdir(self._extract_dir):
             self._clear_extract_dir()
             if self._state_path and os.path.isfile(self._state_path):
@@ -595,7 +571,6 @@ class ZipNavigator(Iterator[List[str]]):
         self._validate_crc = False
 
     def resume_iterator(self, output_dir: str, extract_subdir: str = "extracted_zip") -> None:
-        """Resume a previous iterator run from the saved state file."""
         out_root = os.fspath(output_dir)
         extract_dir = os.path.join(out_root, extract_subdir)
         state_path = os.path.join(extract_dir, ".zip_iter_state.json")
@@ -605,7 +580,7 @@ class ZipNavigator(Iterator[List[str]]):
         if state.get("zip_path") != os.path.abspath(self.zip_path):
             raise RuntimeError("State belongs to a different ZIP.")
         self._base_at_init = state.get("base_at_init", "")
-        if self._resolve(self._cwd) != self._base_at_init:
+        if self._cwd != self._base_at_init:
             self._cwd = self._base_at_init
         self._order = state["order"]
         self._cursor = int(state["cursor"])
@@ -624,7 +599,6 @@ class ZipNavigator(Iterator[List[str]]):
     # ---------------- context manager ----------------
 
     def close(self):
-        """Close the underlying zip file."""
         try:
             self._zip.close()
         except Exception:
