@@ -6,18 +6,18 @@ import posixpath
 from pathlib import Path
 import pytest
 
-# Assicura che 'src' sia nel path quando i test girano localmente
+# Ensure 'src' is on sys.path when tests run locally
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from zip_navigator import ZipNavigator
+from zipnavigator import ZipNavigator
 
 
 def make_small_zip(tmp_path: Path) -> Path:
     """
-    Crea uno zip in-memory con struttura annidata:
+    Create a small zip with a nested structure:
 
     /
     ├─ a/
@@ -41,9 +41,9 @@ def test_navigation_ls_cd_exists(tmp_path):
     with ZipNavigator(str(zf)) as zn:
         assert zn.pwd() == "/"
         root_list = zn.ls()
-        assert set(root_list) == {"a/", "top.txt", "readme.md"}  # dir "a/" visibile
+        assert set(root_list) == {"a/", "top.txt", "readme.md"}  # "a/" directory visible
 
-        # Ricorsivo
+        # Recursive
         all_list = zn.ls(recursive=True)
         assert "a/b/note.txt" in all_list
         assert "a/img.bin" in all_list
@@ -81,30 +81,30 @@ def test_iterator_basic(tmp_path):
     out_dir.mkdir()
 
     with ZipNavigator(str(zf)) as zn:
-        # filtro estensioni: solo .txt e .md
-        zn.inizializza_iteratore(
-            directory_output=str(out_dir),
-            max_elementi=2,
-            nome_cartella="estratti_zip",
+        # extension filter: only .txt and .md
+        zn.initialize_iterator(
+            output_dir=str(out_dir),
+            batch_size=2,
+            extract_subdir="extracted_zip",
             seed=123,
-            estensioni=[".txt", ".md"],
+            extensions=[".txt", ".md"],
             on_error="skip",
             max_retries=1,
             validate_crc=False,
         )
 
-        # Primo batch
+        # First batch
         batch1 = next(zn)
         assert len(batch1) == 2
         for p in batch1:
             assert Path(p).exists()
 
-        stato = zn.stato_iteratore()
-        assert stato["attivo"] is True
-        assert stato["estratti_finora"] == 2
-        assert stato["totale_file"] == 3  # top.txt, a/b/note.txt, readme.md
+        status = zn.iterator_status()
+        assert status["active"] is True
+        assert status["extracted_so_far"] == 2
+        assert status["total_files"] == 3  # top.txt, a/b/note.txt, readme.md
 
-        # Secondo (e ultimo) batch
+        # Second (and last) batch
         batch2 = next(zn)
         assert len(batch2) == 1
         with pytest.raises(StopIteration):
@@ -112,19 +112,17 @@ def test_iterator_basic(tmp_path):
 
 
 def test_iterator_resume(tmp_path, monkeypatch):
-    import pytest
-
     zf = make_small_zip(tmp_path)
     out_dir = tmp_path / "out2"
     out_dir.mkdir()
 
     with ZipNavigator(str(zf)) as zn:
-        zn.inizializza_iteratore(
-            directory_output=str(out_dir),
-            max_elementi=1,
-            nome_cartella="estratti_zip",
+        zn.initialize_iterator(
+            output_dir=str(out_dir),
+            batch_size=1,
+            extract_subdir="extracted_zip",
             seed=42,
-            estensioni=[".txt", ".md"],
+            extensions=[".txt", ".md"],
             on_error="skip",
             max_retries=0,
             validate_crc=True,
@@ -132,14 +130,14 @@ def test_iterator_resume(tmp_path, monkeypatch):
         b1 = next(zn)
         assert len(b1) == 1
 
-        # Simula chiusura del processo e resume
+        # Simulate process shutdown and resume
         zn.close()
 
         with ZipNavigator(str(zf)) as zn2:
-            zn2.resume_iteratore(directory_output=str(out_dir), nome_cartella="estratti_zip")
-            stato = zn2.stato_iteratore()
-            assert stato["estratti_finora"] == 1
-            # Continua finché finisce
+            zn2.resume_iterator(output_dir=str(out_dir), extract_subdir="extracted_zip")
+            status = zn2.iterator_status()
+            assert status["extracted_so_far"] == 1
+            # Continue until completion
             consumed = 0
             for paths in zn2:
                 consumed += len(paths)
@@ -149,9 +147,9 @@ def test_iterator_resume(tmp_path, monkeypatch):
 def test_windows_backslashes_and_safety(tmp_path):
     zf = make_small_zip(tmp_path)
     with ZipNavigator(str(zf)) as zn:
-        # backslash dovrebbe funzionare
+        # backslashes should work
         assert zn.is_file("a\\img.bin")
-        # path traversal non permesso in estrazione (test indiretto)
-        # _is_safe_member è già usato internamente; qui verifichiamo che l'iteratore
-        # funzioni comunque con file "normali" (quelli del nostro zip)
+        # path traversal is blocked during extraction (indirect test)
+        # _is_safe_member is used internally; here we just verify the iterator
+        # still works with normal files (those in our zip)
         pass

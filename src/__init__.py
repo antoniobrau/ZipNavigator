@@ -1,1 +1,1 @@
-from .zip_navigator import ZipNavigator
+from .zipnavigator import ZipNavigator
