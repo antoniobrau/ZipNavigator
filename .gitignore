@@ -6,6 +6,7 @@ __pycache__/
 .venv/
 venv/
 .env
+fix.patch
 
 # macOS / Linux cruft
 .DS_Store
