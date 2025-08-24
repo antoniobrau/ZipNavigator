@@ -18,7 +18,7 @@ Typical use: processing large ZIP datasets (e.g., images/videos/data dumps) wher
 
 ## Installation
 
-From source (recommended during development):
+From source :
 
 ```bash
 git clone https://github.com/antoniobrau/zipnavigator.git
@@ -33,7 +33,6 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-> If you publish to PyPI, users can install with: `pip install zipnavigator`.
 
 ## Quick Start
 
